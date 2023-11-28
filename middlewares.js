@@ -19,6 +19,7 @@ module.exports = {
         } else {
             jwt.verify(token, process.env.JTW_TOKEN_SECRET, (err, result) => {
                 if (err) {
+                    store.clear()
                     res.status(401).json({
                         statusCode: 401,
                         message: 'Invalid or expired token',

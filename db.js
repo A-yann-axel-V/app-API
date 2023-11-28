@@ -109,6 +109,7 @@ module.exports = {
             showInternalError(req, res);
         }
     },
+
     getUsers: (req, res) => {
         pool.query('SELECT userdata.user_name AS name, userdata.email AS email, account.amount AS amount\
                     FROM account\
@@ -121,6 +122,7 @@ module.exports = {
             res.status(200).json(results.rows)
         })
     },
+
     getUserById: (req, res) => {
         const id = parseInt(req.params.id)
 
@@ -136,6 +138,7 @@ module.exports = {
             res.status(200).json(results.rows)
         })
     },
+
     login: async (req, res) => {
         if (store.getItem('token') == null) {
             try {
@@ -148,6 +151,14 @@ module.exports = {
                         message = "Logged in";
                         token = jwt.sign(user.rows[0], process.env.JTW_TOKEN_SECRET, { expiresIn: '2d' })
                         store.setItem('token', token);
+                        pool.query('UPDATE account SET token=$1 WHERE user_id=$2',
+                        [token, user.userid], (err, result) => {
+                            if (err) {
+                                console.error(err);
+                                showInternalError(req, res);
+                            }
+                            res.status(200);
+                        })
                         // localStorage.setItem('token', token); -- Browser side
                     }
                     else message = "Passwords do not match";
@@ -170,14 +181,23 @@ module.exports = {
             })
         }
     },
-    logout: (req, res) => {
+
+    logout: async (req, res) => {
         // localStorage.removeItem("token"); -- Browser side
         try {
+            const user = await getUser(req, res);
             let message;
             const tok = store.getItem("token");
             if (tok == null) message = "Log in first"
             else {
                 store.removeItem("token");
+                pool.query('UPDATE account SET token="null" WHERE userid=$1',
+                    [user.userid], (err, result) => {
+                        if (err) {
+                            console.error(err);
+                            showInternalError(req, res);
+                        }
+                    })
                 message = "User logged out"
             }
             res.status(200).json({
@@ -189,6 +209,7 @@ module.exports = {
             showInternalError(req, res);
         }
     },
+
 
     // Account handling
     createAccount: (req, res) => {
@@ -206,6 +227,7 @@ module.exports = {
             });
         });
     },
+
     getAccounts: (req, res) => {
         pool.query('SELECT * FROM account ORDER BY accountid ASC', (err, results) => {
             if (err) {
@@ -218,6 +240,7 @@ module.exports = {
             res.status(200).json(results.rows)
         })
     },
+
     getAccountById: (req, res) => {
         const id = parseInt(req.params.id)
 
@@ -229,34 +252,49 @@ module.exports = {
             res.status(200).json(results.rows)
         })
     },
-    updateAmount: (req, res) => {
-        try {
-            const amountsData = [
-                [req.user.userid, req.params.amount],
-                [req.params.receiver, req.receiverAmount]
-            ]
 
-            amountsData.forEach((data) => {
-                if (data[0]) {
-                    pool.query('UPDATE account SET amount=$1 WHERE user_id=$2', [data[1], data[0]], (err, res) => {
-                        if (err)
-                            throw err;
+    updateAmount: async (req, res) => {
+        const data = [req.user.userid, (req.params.what == 'debit' ? "-" + req.params.amount : "+" + req.params.amount)];
+        try {
+            const senderAccount = await getAccount(req.user.userid);
+            if (senderAccount) {
+                if (req.params.what == "debit" && ((parseInt(senderAccount.rows[0].amount) - parseInt(req.params.amount)) < 0)) {
+                    res.status(401).json({
+                        status: 401,
+                        amount: senderAccount.rows[0].amount,
+                        message: 'Not sufficient amount',
+                        tip: 'Recharge your account'
+                    })
+                } else {
+                    pool.query('UPDATE account SET amount=amount + $1 WHERE user_id=$2', [data[1], data[0]], (err, result) => {
+                        if (err) {
+                            console.error(err);
+                            showInternalError(req, res);
+                        }
+                        if (result) {
+                            pool.query('INSERT INTO transactions (mouvement, user_id) VALUES ($1, $2)', [data[1], data[0]], (err, result) => {
+                                if (err) {
+                                    console.error(err);
+                                    showInternalError(req, res);
+                                }
+                                res.status(200).json({
+                                    "status": 200,
+                                    "message": "Amount successfully updated"
+                                })
+                            })
+                        }
                     })
                 }
-            })
-            res.status(200).json({
-                "status": 200,
-                "message": "Amount successfully updated"
-            })
+            }
         } catch (e) {
             console.error(e);
             showInternalError(req, res);
         }
-
     },
 
+
     // Transactions handling
-    sendMoney: async (req, res, next) => {
+    transfer: async (req, res) => {
         try {
             // Get sender account and amount
             const senderAccount = await getAccount(req.user.userid);
@@ -271,18 +309,34 @@ module.exports = {
             } else {
                 // Get receiver account and amount
                 const receiverAccount = await getAccount(req.params.receiver);
-                if (receiverAccount.rowCount !== 0) {
-                    let receiverAmount = parseInt(receiverAccount.rows[0].amount);
-
-                    // Make transaction
-                    senderAmount -= parseInt(req.params.amount);
-                    receiverAmount += parseInt(req.params.amount);
-
+                if (receiverAccount.rowCount === 1) {
                     // Update amounts
-                    req.params.amount = senderAmount;
-                    req.receiverAmount = receiverAmount;
+                    const amountsData = [
+                        [req.user.userid, "-" + req.params.amount],
+                        [req.params.receiver, "+" + req.params.amount]
+                    ]
 
-                    next()
+                    amountsData.forEach((data) => {
+                        pool.query('UPDATE account SET amount=amount + $1 WHERE user_id=$2', [data[1], data[0]], (err, result) => {
+                            if (err) {
+                                console.error(err);
+                                showInternalError(req, res);
+                            }
+                            if (result) {
+                                pool.query('INSERT INTO transactions (mouvement, user_id) VALUES ($1, $2)', [data[1], data[0]], (err, result) => {
+                                    if (err) {
+                                        console.error(err);
+                                        showInternalError(req, res);
+                                    }
+                                    console.log(data[1]);
+                                })
+                            }
+                        })
+                    })
+                    res.status(200).json({
+                        "status": 200,
+                        "message": "Amount successfully updated"
+                    })
                 } else {
                     res.status(404).json({
                         status: 404,
@@ -295,8 +349,9 @@ module.exports = {
             showInternalError(req, res);
         }
     },
+
     getTransactions: (req, res) => {
-        pool.query('SELECT * FROM transactions ORDER BY userid ASC', (err, results) => {
+        pool.query('SELECT * FROM transactions ORDER BY transactionid ASC', (err, results) => {
             if (err) {
                 console.error(err);
                 showInternalError(req, res);
@@ -304,10 +359,11 @@ module.exports = {
             res.status(200).json(results.rows)
         })
     },
-    getTransactionById: (req, res) => {
-        const id = parseInt(req.params.id)
 
-        pool.query('SELECT * FROM transaction WHERE transactionid = $1', [id], (err, results) => {
+    getTransactionById: (req, res) => {
+        const id = req.user.userid;
+
+        pool.query('SELECT * FROM transactions WHERE user_id=$1', [id], (err, results) => {
             if (err) {
                 console.error(err);
                 showInternalError(req, res);

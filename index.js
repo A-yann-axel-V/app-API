@@ -4,7 +4,7 @@ const pgQueries     = require('./db');
 const middlewares   = require('./middlewares');
 
 process.env.JTW_TOKEN_SECRET = require('crypto').randomBytes(32).toString('hex')
-const port = 8000;
+const port = 8080;
 
 const app = Express();
 app.use(bodyParser.json());
@@ -28,8 +28,8 @@ app.get('/api/user/:id', pgQueries.getUserById);
 app.get('/api/logout/', pgQueries.logout);
 
 // -- Transaction --
-app.get('/api/transactions', pgQueries.getUsers);
-app.get('/api/transaction/:id', pgQueries.getUserById);
+app.get('/api/transactions-all', pgQueries.getTransactions);
+app.get('/api/transactions-user/', middlewares.authenticateToken, pgQueries.getTransactionById);
 
 
 // POST routes
@@ -41,12 +41,12 @@ app.post('/api/create-user/:name/:email/:passwd/', pgQueries.createUser);
 app.post('/api/login/:mail/:passwd', pgQueries.login);
 
 // -- Transaction
-app.post('/api/transaction/send-money/:amount/:receiver/', middlewares.authenticateToken, pgQueries.sendMoney, pgQueries.updateAmount);
+app.post('/api/transaction/transfer/:amount/:receiver/', middlewares.authenticateToken, pgQueries.transfer);
 
 
 // PUT routes
 // -- Account --
-app.put('/api/update-amount/:amount', middlewares.authenticateToken, pgQueries.updateAmount);
+app.put('/api/transaction/update-amount/:what/:amount', middlewares.authenticateToken, pgQueries.updateAmount);
 
 
 
